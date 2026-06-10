@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CodeToVideo Studio — HTML/CSS/JS to MP4</title>
+  <meta name="description" content="Turn HTML, CSS and JavaScript code into high-quality MP4 video. Choose aspect ratio, resolution, fps and quality, then export." />
+  <link rel="stylesheet" href="css/style.css" />
+
+  <!-- Code editor (Ace) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.7/ace.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.7/ext-language_tools.min.js" crossorigin="anonymous"></script>
+
+  <!-- DOM -> canvas snapshotting for general HTML/CSS capture -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" crossorigin="anonymous"></script>
+
+  <!-- True MP4 muxing (used together with the WebCodecs VideoEncoder) -->
+  <script src="https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.5/build/mp4-muxer.min.js" crossorigin="anonymous"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">▶</span>
+      <div class="brand-text">
+        <h1>CodeToVideo&nbsp;Studio</h1>
+        <p>HTML · CSS · JS  →  high-quality MP4</p>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <span id="capabilityBadge" class="badge" title="Best available encoder in this browser">checking…</span>
+      <button id="runBtn" class="btn btn-ghost" title="Re-run the preview (Ctrl/Cmd+Enter)">↻ Run preview</button>
+      <button id="exportBtn" class="btn btn-primary" title="Render and export MP4">● Export MP4</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- ============ EDITOR ============ -->
+    <section class="panel editor-panel" id="editorPanel">
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-tab="html" role="tab">HTML</button>
+        <button class="tab" data-tab="css" role="tab">CSS</button>
+        <button class="tab" data-tab="js" role="tab">JavaScript</button>
+        <div class="tab-spacer"></div>
+        <select id="templateSelect" class="mini-select" title="Load an example">
+          <option value="">Examples…</option>
+          <option value="css-animation">CSS animated gradient + text</option>
+          <option value="canvas-bars">Canvas: audio-style bars</option>
+          <option value="p5-particles">p5.js particles (CDN)</option>
+          <option value="three-cube">three.js rotating cube (CDN)</option>
+        </select>
+      </div>
+      <div class="editor-hosts">
+        <div id="editor-html" class="editor-host active"></div>
+        <div id="editor-css" class="editor-host"></div>
+        <div id="editor-js" class="editor-host"></div>
+      </div>
+    </section>
+
+    <!-- ============ PREVIEW ============ -->
+    <section class="panel preview-panel">
+      <div class="preview-head">
+        <span class="preview-title">Preview</span>
+        <span id="dimReadout" class="dim-readout">—</span>
+      </div>
+      <div class="preview-stage" id="previewStage">
+        <div class="preview-frame" id="previewFrame">
+          <iframe id="previewIframe" title="Preview" sandbox="allow-scripts allow-same-origin allow-popups"></iframe>
+          <div class="render-overlay" id="renderOverlay" hidden>
+            <div class="render-box">
+              <div class="spinner"></div>
+              <div class="render-label" id="renderLabel">Rendering…</div>
+              <div class="progress"><div class="progress-bar" id="progressBar"></div></div>
+              <div class="render-sub" id="renderSub">0%</div>
+              <button id="cancelBtn" class="btn btn-ghost btn-sm">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ SETTINGS ============ -->
+    <aside class="panel settings-panel">
+      <h2 class="settings-title">Export settings</h2>
+
+      <div class="field">
+        <label>Aspect ratio</label>
+        <div class="ratio-grid" id="ratioGrid">
+          <button class="ratio active" data-w="16" data-h="9">16:9</button>
+          <button class="ratio" data-w="9" data-h="16">9:16</button>
+          <button class="ratio" data-w="1" data-h="1">1:1</button>
+          <button class="ratio" data-w="4" data-h="5">4:5</button>
+          <button class="ratio" data-w="4" data-h="3">4:3</button>
+          <button class="ratio" data-w="21" data-h="9">21:9</button>
+        </div>
+        <div class="ratio-custom">
+          <label class="inline">Custom</label>
+          <input type="number" id="customW" min="1" placeholder="W" />
+          <span>:</span>
+          <input type="number" id="customH" min="1" placeholder="H" />
+          <button id="applyCustomRatio" class="btn btn-ghost btn-sm">Set</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="resolutionSelect">Resolution (quality)</label>
+        <select id="resolutionSelect">
+          <option value="480">480p</option>
+          <option value="720">720p (HD)</option>
+          <option value="1080" selected>1080p (Full HD)</option>
+          <option value="1440">1440p (2K)</option>
+          <option value="2160">2160p (4K)</option>
+        </select>
+        <p class="hint">The number is the height of the long edge for landscape, or width for portrait.</p>
+      </div>
+
+      <div class="field two-col">
+        <div>
+          <label for="fpsSelect">FPS</label>
+          <select id="fpsSelect">
+            <option value="24">24</option>
+            <option value="30" selected>30</option>
+            <option value="60">60</option>
+          </select>
+        </div>
+        <div>
+          <label for="durationInput">Duration (s)</label>
+          <input type="number" id="durationInput" min="0.5" step="0.5" value="5" />
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="bitrateRange">Bitrate / quality <span id="bitrateReadout" class="readout">12 Mbps</span></label>
+        <input type="range" id="bitrateRange" min="1" max="60" step="1" value="12" />
+        <p class="hint">Higher = sharper but larger file. 8–16 Mbps is great for 1080p.</p>
+      </div>
+
+      <div class="field">
+        <label for="captureMode">Capture mode</label>
+        <select id="captureMode">
+          <option value="auto" selected>Auto (recommended)</option>
+          <option value="canvas">Canvas stream (animations on &lt;canvas&gt;)</option>
+          <option value="dom">DOM snapshot (general HTML/CSS)</option>
+        </select>
+        <p class="hint">Auto detects a &lt;canvas&gt; and captures it directly; otherwise it snapshots the DOM frame-by-frame.</p>
+      </div>
+
+      <div class="field">
+        <label class="check">
+          <input type="checkbox" id="deterministic" checked />
+          Deterministic timing (smooth, frame-accurate)
+        </label>
+        <p class="hint">Overrides the page clock so animations are captured frame-by-frame regardless of machine speed.</p>
+      </div>
+
+      <div class="export-summary" id="exportSummary"></div>
+    </aside>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="js/editor.js"></script>
+  <script src="js/preview.js"></script>
+  <script src="js/settings.js"></script>
+  <script src="js/recorder.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
