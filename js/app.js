@@ -93,30 +93,45 @@
 
     const started = performance.now();
 
-    // Watchdog: if progress doesn't advance for a long time, fail loudly
+    // Watchdog: if progress doesn't advance for a while, fail loudly
     // instead of freezing the UI forever.
     let lastProgressAt = performance.now();
     let watchdogTripped = false;
     const watchdog = setInterval(() => {
-      if (performance.now() - lastProgressAt > 20000) {
+      if (performance.now() - lastProgressAt > 15000) {
         watchdogTripped = true;
         cancelled = true;
       }
     }, 2000);
 
-    try {
-      const result = await window.Recorder.export({
-        project: window.Editor.getProject(),
-        settings,
-        onProgress: (f, label, sub) => {
-          lastProgressAt = performance.now();
-          setProgress(f, label, sub);
-        },
-        isCancelled: () => cancelled,
-      });
+    // Hard global timeout: a generous cap based on the clip length so that,
+    // no matter what stalls internally, this promise always resolves and the
+    // UI recovers. Real-time capture needs at least the clip's own duration.
+    const hardCapMs = Math.max(45000, settings.duration * 1000 * 6 + 30000);
+    let hardTimer = null;
+    const hardTimeout = new Promise((resolve) => {
+      hardTimer = setTimeout(() => resolve({ __timedOut: true }), hardCapMs);
+    });
 
-      if (watchdogTripped) {
-        toast("Export stalled and was stopped. Try Canvas capture mode, a shorter duration, or a lower resolution.", "err", 8000);
+    try {
+      const result = await Promise.race([
+        window.Recorder.export({
+          project: window.Editor.getProject(),
+          settings,
+          onProgress: (f, label, sub) => {
+            lastProgressAt = performance.now();
+            setProgress(f, label, sub);
+          },
+          isCancelled: () => cancelled,
+        }),
+        hardTimeout,
+      ]);
+
+      if (result && result.__timedOut) {
+        cancelled = true;
+        toast("Export took too long and was stopped. Try Canvas mode, a shorter duration, or a lower resolution (e.g. 720p).", "err", 9000);
+      } else if (watchdogTripped) {
+        toast("Export stalled and was stopped. Try Canvas mode, a shorter duration, or a lower resolution.", "err", 9000);
       } else if (cancelled) {
         toast("Export cancelled.", null);
       } else {
@@ -135,6 +150,7 @@
       toast("Export failed: " + (err && err.message ? err.message : err), "err", 7000);
     } finally {
       clearInterval(watchdog);
+      if (hardTimer) clearTimeout(hardTimer);
       exporting = false;
       el.exportBtn.disabled = false;
       el.runBtn.disabled = false;
@@ -146,19 +162,28 @@
   }
 
   function initCapabilityBadge() {
-    const caps = window.Recorder.detectCapabilities();
+    const caps = window.Recorder.activeCapabilities
+      ? window.Recorder.activeCapabilities()
+      : window.Recorder.detectCapabilities();
     el.badge.textContent = caps.label;
     el.badge.classList.remove("good", "warn");
     if (caps.mode === "webcodecs") el.badge.classList.add("good");
-    else if (caps.mode === "mediarecorder") el.badge.classList.add("warn");
     else el.badge.classList.add("warn");
 
     if (caps.mode === "mediarecorder") {
       el.badge.title =
-        "WebCodecs isn't available here, so export uses real-time MediaRecorder. For true high-quality MP4, use a recent Chrome or Edge.";
+        "Using real-time MediaRecorder (most compatible). For the highest quality MP4, use desktop Chrome or Edge.";
     } else if (caps.mode === "none") {
       el.badge.title = "No video encoder available in this browser.";
+    } else {
+      el.badge.title = "High-quality MP4 via WebCodecs.";
     }
+  }
+
+  function runPreflight() {
+    el.badge.textContent = "checking encoder…";
+    if (!window.Recorder.preflight) { initCapabilityBadge(); return; }
+    window.Recorder.preflight().then(() => initCapabilityBadge()).catch(() => initCapabilityBadge());
   }
 
   function init() {
@@ -178,6 +203,7 @@
     window.Settings.init(() => window.Preview.refit());
 
     initCapabilityBadge();
+    runPreflight();
 
     el.runBtn.addEventListener("click", refreshPreview);
     el.exportBtn.addEventListener("click", startExport);

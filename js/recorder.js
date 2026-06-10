@@ -1,31 +1,27 @@
 /* =======================================================================
- * recorder.js — The rendering / encoding engine (robust real-time first).
+ * recorder.js — The rendering / encoding engine (robust, mobile-safe).
  *
- * DESIGN GOAL: pasting code + Run + Export must ALWAYS either produce a
- * video or show a clear error. It must NEVER hang silently at 0%.
+ * GOAL: Run preview -> Export must ALWAYS finish with a video or a clear
+ * error. It must NEVER hang at 0%.
  *
- * Strategy:
- *   - Primary path = REAL-TIME capture of the live preview. The animation
- *     simply plays and we grab frames as it runs. This is the most reliable
- *     approach and works for canvas, p5.js, three.js and CSS animations.
- *   - Encoder: WebCodecs + mp4-muxer when available (true MP4). If anything
- *     about that setup fails, we automatically fall back to MediaRecorder.
- *   - Every await is wrapped in a timeout so a stuck step throws instead of
- *     freezing the UI.
+ * Two encoders, chosen automatically:
+ *   1. WebCodecs + mp4-muxer  -> true high-quality MP4 (desktop Chrome/Edge).
+ *   2. MediaRecorder          -> real-time capture (works great on mobile;
+ *                                produces MP4 where supported, else WebM).
  *
- * Frame sources:
- *   - Canvas: copy the preview's <canvas> each frame (best quality).
- *   - DOM:    native SVG <foreignObject> snapshot (no external library).
+ * KEY ROBUSTNESS: every browser call that *could* stall (especially
+ * VideoEncoder.isConfigSupported / configure / flush on mobile) is wrapped
+ * in a timeout. If the WebCodecs path stalls or errors for ANY reason, we
+ * fall back to MediaRecorder. MediaRecorder for a <canvas> uses the canvas's
+ * own captureStream so frames flow automatically — the most reliable path.
  *
  * Exposes a global `Recorder` object.
  * ===================================================================== */
 (function () {
   "use strict";
 
-  /* ----------------------------- utils ----------------------------- */
-  function sleep(ms) {
-    return new Promise((r) => setTimeout(r, ms));
-  }
+  function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+  function nextFrame() { return new Promise((r) => requestAnimationFrame(() => r())); }
 
   function withTimeout(promise, ms, label) {
     return new Promise((resolve, reject) => {
@@ -42,10 +38,6 @@
     });
   }
 
-  function nextFrame() {
-    return new Promise((r) => requestAnimationFrame(() => r()));
-  }
-
   /* ------------------------- capabilities --------------------------- */
   function hasWebCodecs() {
     return (
@@ -56,9 +48,7 @@
       typeof window.Mp4Muxer.Muxer === "function"
     );
   }
-  function hasMediaRecorder() {
-    return typeof window.MediaRecorder === "function";
-  }
+  function hasMediaRecorder() { return typeof window.MediaRecorder === "function"; }
 
   function detectCapabilities() {
     if (hasWebCodecs()) {
@@ -68,7 +58,7 @@
       const mp4 = MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported("video/mp4");
       return {
         mode: "mediarecorder",
-        label: mp4 ? "MP4 · MediaRecorder" : "WebM · MediaRecorder (fallback)",
+        label: mp4 ? "MP4 · MediaRecorder" : "WebM · MediaRecorder",
         good: false,
         mp4: !!mp4,
       };
@@ -76,6 +66,8 @@
     return { mode: "none", label: "No video encoder available", good: false, mp4: false };
   }
 
+  // Guarded codec probe. isConfigSupported can hang on some mobile builds,
+  // so each probe is time-limited; total probing is also capped.
   async function pickAvcCodec(width, height, bitrate, fps) {
     const candidates = [
       "avc1.640034", "avc1.640033", "avc1.640032",
@@ -84,37 +76,38 @@
     ];
     for (const codec of candidates) {
       try {
-        const res = await VideoEncoder.isConfigSupported({ codec, width, height, bitrate, framerate: fps });
+        const res = await withTimeout(
+          VideoEncoder.isConfigSupported({ codec, width, height, bitrate, framerate: fps }),
+          2500,
+          "Codec probe"
+        );
         if (res && res.supported) return codec;
       } catch (e) { /* try next */ }
     }
     return null;
   }
 
-  function waitQueue(encoder, max) {
-    return new Promise((resolve) => {
+  function waitQueue(encoder, max, capMs) {
+    return new Promise((resolve, reject) => {
+      const start = Date.now();
       const check = () => {
-        if (encoder.encodeQueueSize <= max) resolve();
-        else setTimeout(check, 4);
+        if (encoder.encodeQueueSize <= max) return resolve();
+        if (Date.now() - start > capMs) return reject(new Error("Encoder queue stalled"));
+        setTimeout(check, 6);
       };
       check();
     });
   }
 
-  /* --------------------------------------------------------------- *
-   * Frame painters
-   * --------------------------------------------------------------- */
+  /* ------------------------------ painters -------------------------- */
   function canvasPainter(getCanvas, octx, width, height) {
     return async function paint() {
       const src = getCanvas();
       octx.fillStyle = "#000";
       octx.fillRect(0, 0, width, height);
       if (!src) return;
-      try {
-        octx.drawImage(src, 0, 0, width, height);
-      } catch (e) {
-        throw new Error("Could not read the <canvas> (cross-origin image taint).");
-      }
+      try { octx.drawImage(src, 0, 0, width, height); }
+      catch (e) { throw new Error("Could not read the <canvas> (cross-origin image taint)."); }
     };
   }
 
@@ -134,8 +127,7 @@
             im.onerror = () => reject(new Error("DOM snapshot failed; try Canvas mode."));
             im.src = url;
           }),
-          8000,
-          "DOM snapshot"
+          8000, "DOM snapshot"
         );
         octx.fillStyle = "#fff";
         octx.fillRect(0, 0, width, height);
@@ -146,16 +138,12 @@
     };
   }
 
-  /* --------------------------------------------------------------- *
-   * WebCodecs encode — REAL TIME paced (animation plays; we grab frames)
-   * --------------------------------------------------------------- */
+  /* --------------------- WebCodecs encode (real-time paced) --------- */
   async function encodeWebCodecs(ctx) {
     const { width, height, fps, frames, bitrate, out, paint, onProgress, isCancelled } = ctx;
 
     const codec = await pickAvcCodec(width, height, bitrate, fps);
-    if (!codec) {
-      throw new Error("H.264 does not support " + width + "×" + height + " here. Use a lower resolution.");
-    }
+    if (!codec) throw new Error("No supported H.264 config (probe failed/timed out).");
 
     const muxer = new Mp4Muxer.Muxer({
       target: new Mp4Muxer.ArrayBufferTarget(),
@@ -169,18 +157,19 @@
       error: (e) => { encError = e; },
     });
     encoder.configure({ codec, width, height, bitrate, framerate: fps, latencyMode: "quality" });
+    // Let configure settle; if the encoder is going to fault, surface it.
+    await sleep(60);
+    if (encError) throw encError;
 
     const frameDurUs = 1e6 / fps;
     const gop = Math.max(1, Math.round(fps * 2));
     const frameInterval = 1000 / fps;
-
-    let startWall = performance.now();
+    const startWall = performance.now();
 
     for (let i = 0; i < frames; i++) {
       if (isCancelled()) break;
       if (encError) throw encError;
 
-      // Pace to real time so the live animation advances between frames.
       const targetWall = startWall + i * frameInterval;
       const now = performance.now();
       if (targetWall > now) await sleep(targetWall - now);
@@ -195,24 +184,23 @@
       encoder.encode(frame, { keyFrame: i % gop === 0 });
       frame.close();
 
-      if (encoder.encodeQueueSize > 6) await waitQueue(encoder, 4);
+      if (encoder.encodeQueueSize > 6) await waitQueue(encoder, 4, 15000);
       onProgress((i + 1) / frames, "Encoding frames", i + 1 + " / " + frames);
     }
 
     onProgress(1, "Finalising MP4", "");
-    await encoder.flush();
+    await withTimeout(encoder.flush(), 15000, "Finalising");
     if (encError) throw encError;
     muxer.finalize();
     return { blob: new Blob([muxer.target.buffer], { type: "video/mp4" }), ext: "mp4", mime: "video/mp4" };
   }
 
-  /* --------------------------------------------------------------- *
-   * MediaRecorder fallback (real-time)
-   * --------------------------------------------------------------- */
+  /* --------------------- MediaRecorder fallback --------------------- */
   function pickRecorderMime() {
     const list = [
       "video/mp4;codecs=avc1.640028",
       "video/mp4",
+      "video/webm;codecs=h264",
       "video/webm;codecs=vp9",
       "video/webm;codecs=vp8",
       "video/webm",
@@ -224,17 +212,34 @@
   }
 
   async function encodeMediaRecorder(ctx) {
-    const { fps, duration, bitrate, out, paint, onProgress, isCancelled } = ctx;
+    const { fps, duration, bitrate, out, paint, useDom, getSrcCanvas, onProgress, isCancelled } = ctx;
 
     const mime = pickRecorderMime();
     const ext = mime.indexOf("mp4") !== -1 ? "mp4" : "webm";
 
-    // Always paint into our output canvas and capture that stream.
-    const stream = out.captureStream(0);
-    const track = stream.getVideoTracks()[0];
+    let stream;
+    let manualDraw;
+    const srcCanvas = useDom ? null : getSrcCanvas();
 
+    if (!useDom && srcCanvas && typeof srcCanvas.captureStream === "function") {
+      // BEST mobile path: capture the live canvas directly. Frames flow as
+      // the animation runs — no manual pushing, nothing to stall.
+      stream = srcCanvas.captureStream(fps);
+      manualDraw = false;
+    } else {
+      // DOM (or no captureStream): paint into our canvas and push frames.
+      stream = out.captureStream(0);
+      manualDraw = true;
+    }
+
+    const track = stream.getVideoTracks()[0];
     const chunks = [];
-    const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: bitrate });
+    let opts = {};
+    try { opts = { mimeType: mime, videoBitsPerSecond: bitrate }; } catch (e) {}
+    let rec;
+    try { rec = new MediaRecorder(stream, opts); }
+    catch (e) { rec = new MediaRecorder(stream); } // last-resort defaults
+
     rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
     const stopped = new Promise((resolve) => (rec.onstop = resolve));
     rec.start(100);
@@ -247,97 +252,147 @@
         try {
           const elapsed = performance.now() - t0;
           if (isCancelled() || elapsed >= totalMs) return resolve();
-          await withTimeout(paint(), 12000, "Rendering frame");
-          if (track && track.requestFrame) track.requestFrame();
-          else if (stream.requestFrame) stream.requestFrame();
-          onProgress(Math.min(1, elapsed / totalMs), "Recording (real-time)", (Math.round(elapsed / 100) / 10) + "s");
+          if (manualDraw) {
+            await withTimeout(paint(), 12000, "Rendering frame");
+            if (track && track.requestFrame) track.requestFrame();
+            else if (stream.requestFrame) stream.requestFrame();
+          }
+          onProgress(Math.min(0.99, elapsed / totalMs), "Recording (real-time)", (Math.round(elapsed / 100) / 10) + "s");
           requestAnimationFrame(tick);
-        } catch (err) {
-          reject(err);
-        }
+        } catch (err) { reject(err); }
       };
       requestAnimationFrame(tick);
     });
 
+    onProgress(1, "Finalising", "");
     rec.stop();
-    await stopped;
+    await withTimeout(stopped, 10000, "Recorder finalise");
     stream.getTracks().forEach((t) => t.stop());
     if (!chunks.length) throw new Error("Recorder produced no data. Try a different capture mode.");
     return { blob: new Blob(chunks, { type: mime }), ext, mime };
   }
 
-  /* --------------------------------------------------------------- *
-   * Public API
-   * --------------------------------------------------------------- */
+  /* ------------------------------ public ---------------------------- */
   const Recorder = {
     detectCapabilities,
 
+    // Preferred mode can be downgraded by a preflight self-test.
+    _forcedMode: null,
+
+    /**
+     * One-time self-test: actually try to configure + encode ONE tiny frame
+     * with WebCodecs, all under tight timeouts. If anything stalls or throws
+     * (common on some mobile browsers that *advertise* WebCodecs but can't
+     * really use it), we permanently prefer MediaRecorder. This is what
+     * prevents the dreaded "stuck at 0%".
+     */
+    async preflight() {
+      if (!hasWebCodecs()) {
+        this._forcedMode = hasMediaRecorder() ? "mediarecorder" : "none";
+        return this.activeCapabilities();
+      }
+      try {
+        await withTimeout(this._probeEncode(), 4000, "WebCodecs self-test");
+        this._forcedMode = "webcodecs";
+      } catch (e) {
+        console.warn("WebCodecs self-test failed; using MediaRecorder.", e);
+        this._forcedMode = hasMediaRecorder() ? "mediarecorder" : "none";
+      }
+      return this.activeCapabilities();
+    },
+
+    _probeEncode() {
+      return new Promise((resolve, reject) => {
+        try {
+          const cv = document.createElement("canvas");
+          cv.width = 64; cv.height = 64;
+          const c = cv.getContext("2d");
+          c.fillStyle = "#123"; c.fillRect(0, 0, 64, 64);
+
+          let got = false;
+          const enc = new VideoEncoder({
+            output: () => { if (!got) { got = true; try { enc.close(); } catch (e) {} resolve(true); } },
+            error: (e) => reject(e),
+          });
+          // Probe a widely-supported config.
+          VideoEncoder.isConfigSupported({ codec: "avc1.42E01E", width: 64, height: 64, bitrate: 1e6, framerate: 30 })
+            .then((res) => {
+              const codec = res && res.supported ? "avc1.42E01E" : "avc1.640028";
+              enc.configure({ codec, width: 64, height: 64, bitrate: 1e6, framerate: 30 });
+              const frame = new VideoFrame(cv, { timestamp: 0, duration: 33333 });
+              enc.encode(frame, { keyFrame: true });
+              frame.close();
+              enc.flush().catch(reject);
+            })
+            .catch(reject);
+        } catch (e) { reject(e); }
+      });
+    },
+
+    /** Capabilities after preflight (honours the forced mode). */
+    activeCapabilities() {
+      const base = detectCapabilities();
+      if (this._forcedMode === "mediarecorder" && hasMediaRecorder()) {
+        const mp4 = MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported("video/mp4");
+        return { mode: "mediarecorder", label: mp4 ? "MP4 · MediaRecorder" : "WebM · MediaRecorder", good: false, mp4: !!mp4 };
+      }
+      if (this._forcedMode === "none") return { mode: "none", label: "No video encoder available", good: false, mp4: false };
+      return base;
+    },
+
     async export (opts) {
       const { project, settings, onProgress, isCancelled } = opts;
-      const caps = detectCapabilities();
-      if (caps.mode === "none") {
-        throw new Error("This browser has no video encoder. Please use Chrome or Edge.");
-      }
+      const caps = this.activeCapabilities();
+      if (caps.mode === "none") throw new Error("This browser has no video encoder. Please use Chrome or Edge.");
 
       const { width, height, fps, frames, duration, bitrate, captureMode } = settings;
 
       onProgress(0, "Preparing scene", "");
-
-      // Load a clean, LIVE (real-time) preview document.
       await withTimeout(window.Preview.render(project), 8000, "Loading preview");
       const doc = window.Preview.doc();
       if (!doc) throw new Error("Could not access the preview document.");
 
-      // Wait until the scene is actually ready to capture (canvas exists / DOM painted).
       onProgress(0.01, "Waiting for content", "");
       const wantCanvas = captureMode === "canvas" || captureMode === "auto";
-      await withTimeout(window.Preview.waitUntilReady(wantCanvas), 6000, "Waiting for content")
-        .catch(() => { /* proceed anyway; painter handles emptiness */ });
+      await withTimeout(window.Preview.waitUntilReady(wantCanvas), 6000, "Waiting for content").catch(() => {});
 
-      // Give animations a moment to start.
       await sleep(120);
       await nextFrame();
 
-      // Decide frame source.
       let useDom;
-      if (captureMode === "dom") {
-        useDom = true;
-      } else if (captureMode === "canvas") {
-        if (!window.Preview.findCanvas()) {
-          throw new Error("Canvas mode selected, but no <canvas> was found in the preview.");
-        }
+      if (captureMode === "dom") useDom = true;
+      else if (captureMode === "canvas") {
+        if (!window.Preview.findCanvas()) throw new Error("Canvas mode selected, but no <canvas> was found.");
         useDom = false;
       } else {
-        // auto
         useDom = !window.Preview.findCanvas();
       }
 
-      // Output canvas at the true export resolution.
       const out = document.createElement("canvas");
       out.width = width;
       out.height = height;
-      const octx = out.getContext("2d", { alpha: false, willReadFrequently: false });
+      const octx = out.getContext("2d", { alpha: false });
 
       const paint = useDom
         ? makeDomPainter(() => window.Preview.serializeBody(), octx, width, height)
         : canvasPainter(() => window.Preview.findCanvas(), octx, width, height);
 
-      // ONE test paint up front so problems surface immediately (not at 0%).
       onProgress(0.02, "Rendering first frame", "");
       await withTimeout(paint(), 12000, "First frame");
 
       const ctx = {
         width, height, fps, frames, duration, bitrate,
-        out, octx, paint, useDom, onProgress, isCancelled,
+        out, octx, paint, useDom,
+        getSrcCanvas: () => window.Preview.findCanvas(),
+        onProgress, isCancelled,
       };
 
-      // Try WebCodecs; if its setup fails for any reason, fall back cleanly.
       if (caps.mode === "webcodecs") {
         try {
           return await encodeWebCodecs(ctx);
         } catch (err) {
           if (isCancelled()) throw err;
-          console.warn("WebCodecs path failed, falling back to MediaRecorder:", err);
+          console.warn("WebCodecs failed; falling back to MediaRecorder:", err);
           if (!hasMediaRecorder()) throw err;
           onProgress(0.02, "Switching encoder…", "");
           return await encodeMediaRecorder(ctx);
