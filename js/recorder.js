@@ -74,6 +74,10 @@
     });
   }
 
+  function sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
   /* ----------------------------------------------------------------- *
    * Frame stepping: advance JS animations (virtual clock) AND scrub
    * CSS animations / transitions via the Web Animations API.
@@ -131,7 +135,7 @@
    * WebCodecs encode (deterministic, frame-by-frame)
    * ----------------------------------------------------------------- */
   async function encodeWebCodecs(ctx) {
-    const { width, height, fps, frames, bitrate, out, octx, step, paint, onProgress, isCancelled } = ctx;
+    const { width, height, fps, frames, bitrate, out, octx, step, paint, deterministic, onProgress, isCancelled } = ctx;
 
     const codec = await pickAvcCodec(width, height, bitrate, fps);
     if (!codec) throw new Error("This browser's H.264 encoder does not support " + width + "×" + height + ". Try a lower resolution.");
@@ -162,6 +166,10 @@
     for (let i = 0; i < frames; i++) {
       if (isCancelled()) break;
       if (encError) throw encError;
+
+      // When not stepping a virtual clock, pace capture to real time so the
+      // live animation advances roughly one frame between grabs.
+      if (!deterministic && i > 0) await sleep(1000 / fps);
 
       const tMs = (i * 1000) / fps;
       step(tMs);
@@ -309,7 +317,8 @@
 
       const ctx = {
         width, height, fps, frames, duration, bitrate,
-        out, octx, step, paint, useDom, srcCanvas, onProgress, isCancelled,
+        out, octx, step, paint, useDom, srcCanvas, deterministic: useDeterministic,
+        onProgress, isCancelled,
       };
 
       if (caps.mode === "webcodecs") {
