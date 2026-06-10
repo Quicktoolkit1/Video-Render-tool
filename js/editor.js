@@ -7,8 +7,61 @@
 
   const STORAGE_KEY = "codetovideo.project.v1";
 
-  // --- Default starter project (a clean CSS animation that exports nicely) ---
+  // --- Default starter project: a self-contained CANVAS animation.
+  //     Canvas capture is the most reliable export path, so the very first
+  //     export "just works" with no setup. ---
   const DEFAULTS = {
+    html: '<canvas id="stage"></canvas>\n',
+    css:
+      "html,body{margin:0;height:100%;background:#0b1020;overflow:hidden}\n" +
+      "#stage{display:block;width:100%;height:100%}\n",
+    js:
+      "// Everything is drawn on a <canvas>, which exports as smooth, high-quality MP4.\n" +
+      "const cv = document.getElementById('stage');\n" +
+      "const ctx = cv.getContext('2d');\n" +
+      "function resize(){ cv.width = innerWidth; cv.height = innerHeight; }\n" +
+      "resize(); addEventListener('resize', resize);\n" +
+      "\n" +
+      "function draw(now){\n" +
+      "  const t = now / 1000;            // seconds\n" +
+      "  const W = cv.width, H = cv.height;\n" +
+      "\n" +
+      "  // Animated gradient background\n" +
+      "  const g = ctx.createLinearGradient(0, 0, W, H);\n" +
+      "  const a = (Math.sin(t * 0.6) * 0.5 + 0.5);\n" +
+      "  g.addColorStop(0, `hsl(${220 + a * 40} 80% 55%)`);\n" +
+      "  g.addColorStop(1, `hsl(${280 + a * 40} 75% 55%)`);\n" +
+      "  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);\n" +
+      "\n" +
+      "  // Spinning ring\n" +
+      "  const cx = W / 2, cy = H / 2, r = Math.min(W, H) * 0.16;\n" +
+      "  ctx.lineWidth = Math.max(4, r * 0.12);\n" +
+      "  ctx.strokeStyle = 'rgba(255,255,255,0.35)';\n" +
+      "  ctx.beginPath(); ctx.arc(cx, cy - r * 0.2, r, 0, Math.PI * 2); ctx.stroke();\n" +
+      "  ctx.strokeStyle = '#fff';\n" +
+      "  ctx.beginPath(); ctx.arc(cx, cy - r * 0.2, r, t * 2, t * 2 + Math.PI * 0.6); ctx.stroke();\n" +
+      "\n" +
+      "  // Title text with a gentle pulse\n" +
+      "  const scale = 1 + Math.sin(t * 2) * 0.04;\n" +
+      "  ctx.save();\n" +
+      "  ctx.translate(cx, cy + r * 1.1);\n" +
+      "  ctx.scale(scale, scale);\n" +
+      "  ctx.fillStyle = '#fff';\n" +
+      "  ctx.textAlign = 'center';\n" +
+      "  ctx.font = `700 ${Math.round(Math.min(W, H) * 0.09)}px Inter, Arial, sans-serif`;\n" +
+      "  ctx.fillText('Hello, Video', 0, 0);\n" +
+      "  ctx.font = `400 ${Math.round(Math.min(W, H) * 0.035)}px Inter, Arial, sans-serif`;\n" +
+      "  ctx.fillStyle = 'rgba(255,255,255,0.85)';\n" +
+      "  ctx.fillText('Coded in HTML, CSS & JS', 0, Math.min(W, H) * 0.09);\n" +
+      "  ctx.restore();\n" +
+      "\n" +
+      "  requestAnimationFrame(draw);\n" +
+      "}\n" +
+      "requestAnimationFrame(draw);\n",
+  };
+
+  // The original CSS-animation example is kept in the dropdown.
+  const CSS_ANIMATION = {
     html:
       '<div class="scene">\n' +
       '  <div class="ring"></div>\n' +
@@ -35,15 +88,14 @@
       "}\n" +
       "@keyframes spin{to{transform:rotate(360deg)}}\n",
     js:
-      "// Your JavaScript runs inside the preview.\n" +
-      "// Tip: for the smoothest exports use requestAnimationFrame\n" +
-      "// or the global `frame` / `time` values the recorder provides.\n" +
-      "console.log('Preview booted at', new Date().toISOString());\n",
+      "// This example uses pure CSS animation.\n" +
+      "// For export, choose capture mode 'DOM snapshot' (or leave it on Auto).\n" +
+      "console.log('CSS animation example loaded');\n",
   };
 
   // --- Example templates the user can load from the dropdown ---
   const TEMPLATES = {
-    "css-animation": DEFAULTS,
+    "css-animation": CSS_ANIMATION,
 
     "canvas-bars": {
       html: '<canvas id="c"></canvas>',

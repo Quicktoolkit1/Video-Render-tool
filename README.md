@@ -41,7 +41,7 @@ python3 -m http.server 8000
 ```
 
 > Internet access is needed the first time so the browser can load the editor and encoder
-> libraries from their CDNs (Ace, html2canvas, mp4-muxer).
+> libraries from their CDNs (Ace, mp4-muxer).
 
 ---
 
@@ -58,10 +58,11 @@ python3 -m http.server 8000
 |------|----------|--------------|
 | **Auto** | most cases | Uses a `<canvas>` if present, otherwise snapshots the DOM. |
 | **Canvas stream** | p5.js / three.js / 2D canvas | Captures the `<canvas>` directly — fastest & sharpest. |
-| **DOM snapshot** | general HTML/CSS, text, layout | Uses `html2canvas` to snapshot each frame. |
+| **DOM snapshot** | general HTML/CSS, text, layout | Native SVG `<foreignObject>` snapshot each frame (no external library). |
 
-> `html2canvas` (DOM mode) renders an approximation of the page. It does not read pixels out of
-> a WebGL/2D `<canvas>` — for canvas-based animation use **Canvas / Auto** mode.
+> DOM mode renders the page using the browser's own SVG engine with inlined styles. It never
+> hangs, but very advanced CSS features can render approximately — for canvas-based animation
+> use **Canvas / Auto** mode for pixel-perfect results.
 
 ---
 
@@ -99,5 +100,5 @@ js/app.js         Glue: live preview, export flow, progress, download
 ## Limitations
 
 - Encoding happens on the main thread; very long clips at 4K can be slow and memory‑heavy.
-- DOM-mode fidelity is limited to what `html2canvas` supports.
+- DOM-mode fidelity is limited to what the browser's SVG `<foreignObject>` rendering supports.
 - The tool runs entirely client-side, so your code never leaves your browser.

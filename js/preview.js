@@ -196,6 +196,69 @@
       }
     },
 
+    /**
+     * Serialise the current preview document into a self-contained HTML
+     * string for the native SVG <foreignObject> snapshot used by DOM capture.
+     *
+     * SVG foreignObject cannot reference external stylesheets, so we INLINE
+     * the computed style of every element. We also clone any <canvas> as an
+     * <img> of its current pixels, so 2D/WebGL canvases appear in DOM mode too.
+     */
+    serializeBody() {
+      const d = this.doc();
+      if (!d || !d.body) return "";
+
+      const clone = d.body.cloneNode(true);
+
+      // Copy computed styles onto the clones so they render without the
+      // original stylesheet. We walk source and clone trees in lockstep.
+      const srcNodes = [d.body].concat(Array.prototype.slice.call(d.body.querySelectorAll("*")));
+      const dstNodes = [clone].concat(Array.prototype.slice.call(clone.querySelectorAll("*")));
+      const win = this.win();
+
+      for (let i = 0; i < srcNodes.length; i++) {
+        const src = srcNodes[i];
+        const dst = dstNodes[i];
+        if (!dst || dst.nodeType !== 1) continue;
+
+        // Replace <canvas> with a snapshot <img>.
+        if (src.tagName === "CANVAS") {
+          try {
+            const img = d.createElement("img");
+            img.src = src.toDataURL("image/png");
+            img.width = src.clientWidth || src.width;
+            img.height = src.clientHeight || src.height;
+            if (dst.parentNode) dst.parentNode.replaceChild(img, dst);
+          } catch (e) { /* tainted canvas: leave as-is */ }
+          continue;
+        }
+
+        try {
+          const cs = win.getComputedStyle(src);
+          let css = "";
+          for (let j = 0; j < cs.length; j++) {
+            const prop = cs[j];
+            css += prop + ":" + cs.getPropertyValue(prop) + ";";
+          }
+          dst.setAttribute("style", css);
+        } catch (e) { /* ignore */ }
+      }
+
+      // Remove scripts from the snapshot (no need, and they shouldn't run).
+      clone.querySelectorAll("script").forEach((s) => s.remove());
+
+      const bg = (function () {
+        try { return win.getComputedStyle(d.body).backgroundColor || "#fff"; }
+        catch (e) { return "#fff"; }
+      })();
+
+      return (
+        '<div style="width:100%;height:100%;background:' + bg + ';">' +
+        clone.innerHTML +
+        "</div>"
+      );
+    },
+
     /** Find a full-bleed <canvas> in the preview (for direct canvas capture). */
     findCanvas() {
       const d = this.doc();
