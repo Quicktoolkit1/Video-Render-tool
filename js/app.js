@@ -93,15 +93,31 @@
 
     const started = performance.now();
 
+    // Watchdog: if progress doesn't advance for a long time, fail loudly
+    // instead of freezing the UI forever.
+    let lastProgressAt = performance.now();
+    let watchdogTripped = false;
+    const watchdog = setInterval(() => {
+      if (performance.now() - lastProgressAt > 20000) {
+        watchdogTripped = true;
+        cancelled = true;
+      }
+    }, 2000);
+
     try {
       const result = await window.Recorder.export({
         project: window.Editor.getProject(),
         settings,
-        onProgress: (f, label, sub) => setProgress(f, label, sub),
+        onProgress: (f, label, sub) => {
+          lastProgressAt = performance.now();
+          setProgress(f, label, sub);
+        },
         isCancelled: () => cancelled,
       });
 
-      if (cancelled) {
+      if (watchdogTripped) {
+        toast("Export stalled and was stopped. Try Canvas capture mode, a shorter duration, or a lower resolution.", "err", 8000);
+      } else if (cancelled) {
         toast("Export cancelled.", null);
       } else {
         const filename = timestampName(result.ext);
@@ -118,6 +134,7 @@
       console.error(err);
       toast("Export failed: " + (err && err.message ? err.message : err), "err", 7000);
     } finally {
+      clearInterval(watchdog);
       exporting = false;
       el.exportBtn.disabled = false;
       el.runBtn.disabled = false;

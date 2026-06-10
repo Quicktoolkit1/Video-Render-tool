@@ -16,10 +16,10 @@ It works with plain HTML/CSS, `<canvas>` animations, and popular libraries loade
 - **Resolution** — 480p → 4K (2160p).
 - **Frame rate** — 24 / 30 / 60 fps.
 - **Duration & bitrate** — control length and quality.
-- **True MP4 (H.264)** via the **WebCodecs** API + `mp4-muxer`, encoded frame‑by‑frame.
-- **Deterministic, frame‑accurate capture** — a virtual clock drives `requestAnimationFrame`,
-  `setTimeout`, `performance.now()` and `Date`, while CSS animations are scrubbed through the
-  Web Animations API. Output is smooth regardless of how fast your machine is.
+- **True MP4 (H.264)** via the **WebCodecs** API + `mp4-muxer` when available.
+- **Reliable real-time capture** — the animation plays and frames are grabbed as it runs.
+  If WebCodecs setup fails for any reason, it automatically falls back to **MediaRecorder**,
+  so an export always completes (or shows a clear error) instead of hanging.
 - **MediaRecorder fallback** for browsers without WebCodecs (produces WebM, or MP4 on Safari).
 - **Built‑in examples** — CSS animation, canvas bars, p5.js particles, three.js cube.
 
@@ -77,8 +77,8 @@ You can see which path is active in the badge at the top right.
 
 ## Tips for great results
 
-- For the smoothest animation, drive motion with `requestAnimationFrame` (JS) or CSS animations —
-  both are captured frame-accurately when **Deterministic timing** is on.
+- For the smoothest animation, drive motion with `requestAnimationFrame` (JS) or CSS animations.
+  The recorder captures the preview in real time at your chosen frame rate.
 - Higher bitrate = sharper but larger files. 8–16 Mbps is great for 1080p; bump it up for 4K.
 - Loading a library? Add its `<script src="https://…">` tag in the **HTML** tab; your JavaScript
   in the **JS** tab runs after it loads.
@@ -91,7 +91,7 @@ You can see which path is active in the badge at the top right.
 index.html        Main UI
 css/style.css     Styling
 js/editor.js      Code editor (Ace) + examples
-js/preview.js     Iframe preview, sizing, deterministic clock harness
+js/preview.js     Iframe preview, sizing, readiness wait, DOM serialisation
 js/settings.js    Aspect ratio / resolution / fps / duration / bitrate
 js/recorder.js    WebCodecs + mp4-muxer encoder and MediaRecorder fallback
 js/app.js         Glue: live preview, export flow, progress, download

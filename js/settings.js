@@ -14,7 +14,6 @@
     duration: 5,
     bitrateMbps: 12,
     captureMode: "auto",
-    deterministic: true,
   };
 
   let onResizeCb = null;
@@ -86,7 +85,6 @@
         bitrate: document.getElementById("bitrateRange"),
         bitrateReadout: document.getElementById("bitrateReadout"),
         captureMode: document.getElementById("captureMode"),
-        deterministic: document.getElementById("deterministic"),
         summary: document.getElementById("exportSummary"),
       };
 
@@ -135,10 +133,6 @@
         state.captureMode = els.captureMode.value;
       });
 
-      els.deterministic.addEventListener("change", () => {
-        state.deterministic = els.deterministic.checked;
-      });
-
       // Initialise from defaults
       els.resolution.value = String(state.resolution);
       els.fps.value = String(state.fps);
@@ -146,7 +140,6 @@
       els.bitrate.value = String(state.bitrateMbps);
       els.bitrateReadout.textContent = state.bitrateMbps + " Mbps";
       els.captureMode.value = state.captureMode;
-      els.deterministic.checked = state.deterministic;
 
       pushSize();
     },
